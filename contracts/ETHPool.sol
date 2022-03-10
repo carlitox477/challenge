@@ -14,18 +14,18 @@ contract ETHPool is Ownable{
         uint256 rewards;
     }
 
-    uint256 currentRewardId=1;
+    event RewardDeposit(uint256 rewardNum, uint256 rewards);
+    event Harvest(uint256 rewardNum, uint256 rewards);
+
+    uint256 currentRewardId=0;
     uint256 currentTotalDeposits=0;
     mapping(uint256=>RewardsInfo) rewardsIdToRewardsInfo;
     mapping(address=> Deposit) deposits;
-    string private greeting;
-    event RewardDeposit(uint256 rewardNum, uint256 rewards);
 
     
     
-    constructor(string memory _greeting) Ownable(){
-        console.log("Deploying a Greeter with greeting:", _greeting);
-        greeting = _greeting;
+    constructor() Ownable(){
+        
     }
 
     /**
@@ -46,10 +46,12 @@ contract ETHPool is Ownable{
     function getPendingRewards(address staker) view public returns(uint256){
         Deposit memory deposit=deposits[staker];
         // uint256 _currentRewardId=currentRewardId; // check if it save more gas
-        require(deposit.amount==0 || deposit.rewardId==currentRewardId,"No rewards pending"); //Check deposit.rewardNum has no sense, it will spend more gas.
+        require(deposit.amount>0 || deposit.rewardId==currentRewardId,"No rewards pending"); //Check deposit.rewardNum has no sense, it will spend more gas.
         
+
+
         //created here to save gas before require
-        uint256 pendingRewards;
+        uint256 pendingRewards=0;
         RewardsInfo memory rewardsInfo; //This declaration here save us gas in the foor loop too
 
         for(uint256 i=deposit.rewardId;i<currentRewardId;i++){
@@ -58,16 +60,72 @@ contract ETHPool is Ownable{
             //Solidity 0.8 assure us there won't be over/underflow, otherwise we should use a library like SafeMath
             pendingRewards+=(deposit.amount/rewardsInfo.totalDeposits)*rewardsInfo.rewards;
         }
-    return pendingRewards;
+        return pendingRewards;
     }
+
+    function withdrawAll() public{
+        Deposit memory deposit=deposits[msg.sender];
+        // uint256 _currentRewardId=currentRewardId; // check if it save more gas
+        require(deposit.amount>0, "No funds deposited"); //Check deposit.rewardNum has no sense, it will spend more gas.
+        if(deposit.rewardId == currentRewardId){
+            payable(msg.sender).transfer(deposit.amount);
+        }else{
+            uint256 pendingRewards=getPendingRewards(msg.sender);
+            payable(msg.sender).transfer(deposit.amount+pendingRewards);
+        }
+
+        deposits[msg.sender].amount=0;
+        rewardsIdToRewardsInfo[currentRewardId].totalDeposits-=deposit.amount;
+    }
+
+    function harvest() public{
+        Deposit memory deposit=deposits[msg.sender];
+        // uint256 _currentRewardId=currentRewardId; // check if it save more gas
+        require(deposit.amount>0 && deposit.rewardId < currentRewardId, "No pending rewards to harvest");
+        
+        uint256 pendingRewards=getPendingRewards(msg.sender);
+
+        deposits[msg.sender].amount+=pendingRewards;
+        deposits[msg.sender].rewardId=currentRewardId;
+    }
+
+    function withdrawRewards(address payable staker) internal{
+        Deposit memory deposit=deposits[staker];
+        // uint256 _currentRewardId=currentRewardId; // check if it save more gas
+        require(deposit.amount>0 && deposit.rewardId < currentRewardId, "No pending rewards to harvest");
+        
+        uint256 pendingRewards=getPendingRewards(staker);
+        payable(staker).transfer(pendingRewards);
+        
+        deposits[staker].rewardId=currentRewardId;
+    }
+
+    function hasPendingRewards(address staker) view internal returns(bool){
+        Deposit memory deposit=deposits[staker];
+        return deposit.amount>0 && deposit.rewardId < currentRewardId;
+    }
+
     
-
-    function greet() public view returns (string memory) {
-        return greeting;
+    //Deposit default behavior
+    receive() external payable  {
+        if(hasPendingRewards(msg.sender)){
+            depositAndWithdrawRewards();
+        }else{
+            deposits[msg.sender].rewardId=currentRewardId;
+            deposits[msg.sender].amount+=msg.value;
+        }
     }
 
-    function setGreeting(string memory _greeting) public {
-        console.log("Changing greeting from '%s' to '%s'", greeting, _greeting);
-        greeting = _greeting;
+
+    function depositAndWithdrawRewards() internal{
+        withdrawRewards(payable(msg.sender));
+        deposits[msg.sender].amount+=msg.value;
     }
+
+    function depositAndHarvestRewards() public payable{
+        harvest();
+        deposits[msg.sender].amount+=msg.value;
+    }
+
+    
 }
