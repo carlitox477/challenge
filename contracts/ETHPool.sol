@@ -28,6 +28,15 @@ contract ETHPool is Ownable{
         greeting = _greeting;
     }
 
+    /**
+    * @dev Funtion which allows the owner to deposit rewards whenever he wants
+    * @param _rewards rewards deposited
+    */
+    function depositRewards(uint256 _rewards) public payable onlyOwner{
+        rewardsIdToRewardsInfo[currentRewardId].rewards=_rewards; //establish when the rewards were deposited
+        emit RewardDeposit(currentRewardId, _rewards); 
+        currentRewardId++; //set new reward num (new stage)
+    }
     
     /**
     * @dev Function which allow us to calculate the pending rewards from an address
