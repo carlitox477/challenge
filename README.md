@@ -9,7 +9,7 @@
 1. The ETHPool contract is deployed the 01/01
 1. **A** deposits 1 ETH the day 02/01
 1. **B** deposit 1 ETH the day 03/01
-1. **T** deposit a reward of 2 ETH, if **A** or **B** want to usntake their part they will recive 2 ETH
+1. **T** deposit a reward of 2 ETH, if **A** or **B** want to usntake their part they will recive 1 ETH each one
 
 # Aproches
 ## Naive for loop aproach
