@@ -1,10 +1,14 @@
 //SPDX-License-Identifier: Unlicense
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.4;
 
 import "hardhat/console.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-contract RewardETHPool is Ownable{
+contract ETHPool is AccessControl,ReentrancyGuard{
+    bytes32 public constant OWNER = keccak256("OWNER");
+    bytes32 public constant TEAM_MEMBER = keccak256("TEAM_MEMBER");
+
     struct RewardsInfo{
         uint256 rewardId;
         uint256 stakeLimitDate;
@@ -19,25 +23,37 @@ contract RewardETHPool is Ownable{
     }
 
     uint256 constant STAKE_TIME= 1 weeks;
-    uint256 currentRewardId;
-    uint256 currentRewardTotalDeposits;
-    uint256 totalDeposits;
+    uint256 public currentRewardId;
+    uint256 public currentRewardTotalDeposits;
+    uint256 public totalDeposits;
 
-    mapping(uint256=>RewardsInfo) rewardIdToRewardsInfo;
-    mapping(address=>Deposit) addressToDeposits;
+    mapping(uint256=>RewardsInfo) public rewardIdToRewardsInfo;
+    mapping(address=>Deposit) public addressToDeposits;
 
-    constructor() Ownable(){}
-
-    function setNextRewards(uint256 rewards, uint256 stakeLimitDate) external onlyOwner {
-        require(rewards>0,"rewards must be > 0 ");
+    constructor(uint256 rewards, uint256 stakeLimitDate) AccessControl(){
+        
+        require(rewards>0,"rewards must be > 0");
         require(stakeLimitDate>block.timestamp + 1 days,"Stake limit date should be at least 1 day furhter than now");
+
+        _setRoleAdmin(OWNER, OWNER);
+        _setRoleAdmin(TEAM_MEMBER, OWNER);
+        _grantRole(OWNER, msg.sender);
+        _grantRole(TEAM_MEMBER, msg.sender);
+
+        //We need to set the first rewards
+        rewardIdToRewardsInfo[0].stakeLimitDate=stakeLimitDate;
+        rewardIdToRewardsInfo[0].amount=rewards;
+    }
+
+    function setNextRewards(uint256 rewards, uint256 stakeLimitDate) external onlyRole(OWNER) {
+        require(rewards>0,"rewards must be > 0");
+        require(stakeLimitDate>block.timestamp + 1 days,"Stake limit date should be at least 1 day further than now");
 
         uint256 _currentRewardId= currentRewardId; //gas saving
         uint256 nextRewardId=_currentRewardId+1;
 
         //We check that the next stake limit date is greater than the current reward date
-        RewardsInfo memory currentRewardInfo=rewardIdToRewardsInfo[_currentRewardId];
-        require(currentRewardInfo.stakeLimitDate+1 weeks>=stakeLimitDate,"Next stake limit date should be greater than the current reward date");
+        require((rewardIdToRewardsInfo[_currentRewardId].stakeLimitDate+8 days)<=stakeLimitDate,"Next stake limit date should be greater/equal than 8 days after the current reward date");
         
         //We check that the next reward hasn't been setted yet
         uint256 nextRewardAmount=rewardIdToRewardsInfo[nextRewardId].amount;
@@ -50,33 +66,37 @@ contract RewardETHPool is Ownable{
         nextRewardInfo.stakeLimitDate=stakeLimitDate;
     }
 
-    function modifyNextRewards(uint256 newRewards) external onlyOwner{
+    function modifyNextRewards(uint256 newRewards) external onlyRole(OWNER){
         uint256 nextRewardId=currentRewardId+1;
         require(rewardIdToRewardsInfo[nextRewardId].amount>0, "You should use setNextRewards function");
+        require(newRewards>0, "newRewards should be > 0");
         rewardIdToRewardsInfo[nextRewardId].amount=newRewards;
     }
 
-    function modifyNextRewardsStakeLimitDate(uint256 newDate) external onlyOwner{
+    function modifyNextRewardsStakeLimitDate(uint256 newDate) external onlyRole(OWNER){
         //Check if it the new date has at least 1 day of delay
-        require(newDate>block.timestamp + 1 days,"Stake limit date should be at least 1 day furhter than now");
+        require(newDate>block.timestamp + 1 days,"Stake limit date should be at least 1 day further than now");
 
         //Check if the next rewards has already been setted
         uint256 nextRewardId=currentRewardId+1;
         RewardsInfo memory nextRewardInfo=rewardIdToRewardsInfo[nextRewardId];
         require(nextRewardInfo.amount>0, "You should use setNextRewards function");
-        
-        
-        //Check if the current next stake limit date is greater than now
-        require(nextRewardInfo.stakeLimitDate<block.timestamp, "You should use setNextRewards function");
+
         rewardIdToRewardsInfo[nextRewardId].stakeLimitDate=newDate;
     }
 
-    function depositCurrentRewards() external payable onlyOwner{
+    function depositCurrentRewards() external payable onlyRole(TEAM_MEMBER) nonReentrant{
         uint256 _currentRewardId= currentRewardId;
+        uint256 _currentRewardTotalDeposits=currentRewardTotalDeposits;
 
         //Check if the correct rewards were sent
         RewardsInfo memory currentRewardInfo=rewardIdToRewardsInfo[_currentRewardId];
-        require(msg.value==currentRewardInfo.amount,"Incorrect amount of rewards sent");
+        if(_currentRewardTotalDeposits!=0){
+            require(msg.value==currentRewardInfo.amount,"Incorrect amount of rewards sent");
+        }else{
+            payable(msg.sender).transfer(msg.value);
+        }
+        
         
         //Check if the finish dates has already passed
         uint256 stakeFinishDate=currentRewardInfo.stakeLimitDate + 7 days;
@@ -87,23 +107,13 @@ contract RewardETHPool is Ownable{
         require(rewardIdToRewardsInfo[nextRewardId].amount>0,"You must set next rewards before depositing current rewards");
 
         //Save total deposits to calculate rewards later
-        rewardIdToRewardsInfo[_currentRewardId].totalDeposits=currentRewardTotalDeposits;
+        rewardIdToRewardsInfo[_currentRewardId].totalDeposits=_currentRewardTotalDeposits;
 
         //Change current reward id to the next one
         currentRewardId = nextRewardId;
         currentRewardTotalDeposits=totalDeposits;
-    }
 
-    /*
-        deposit A done time 0 with crID=1
-        previous rewards deposited, now crID=2
-        limit time for R pass
-        deposit B done in time 1 crID=2
-        rewardsDeposited on time 2, crID=3
-        limit time for R2 pass
-        rewardsDeposited on time 3, crID=4
-        
-    */
+    }
 
     function calculateDepositPendingRewards(Deposit memory deposit) internal view returns(uint256){
         uint256 totalRewards;
@@ -120,55 +130,25 @@ contract RewardETHPool is Ownable{
         //corresponding to rewardId 1 only when the current reward is equal/greater than 2 
         for(uint256 i=deposit.firstRewardId;i<_currentRewardId;i++){
             rewardInfo=rewardIdToRewardsInfo[i];
-            totalRewards+= (depositAmount/rewardInfo.totalDeposits)*(rewardInfo.amount); //This can bbe done like this due to solidity 0.8, for previous version we should use sth like safe math library
+            totalRewards+= (depositAmount*rewardInfo.amount)/rewardInfo.totalDeposits; //This can be done like this due to solidity 0.8, for previous version we should use sth like safe math library
         }
 
         return totalRewards;
     }
 
-    function _unstake() internal{
-        Deposit memory deposit=addressToDeposits[_msgSender()];
-
-        //If the current rewards hasn't been deposited the transaction will be reverted,
-        //user will need yo use the panicUnstake function
-        uint256 pendingRewards=calculateDepositPendingRewards(deposit);
-        
-        payable(_msgSender()).transfer(deposit.amount+pendingRewards);
-        
-        if(deposit.firstRewardId<=currentRewardId){
-            currentRewardTotalDeposits-=deposit.amount;
-        }
-        
-        totalDeposits-=deposit.amount;
-        deposit.amount=0;
-    }
-
-    function unstake() external{
-        uint256 currentRewardStakeEndDate=rewardIdToRewardsInfo[currentRewardId].stakeLimitDate+ 7 days;
-        require(currentRewardStakeEndDate>block.timestamp,"Current pending rewards hasn't been paid yet, unstake won't allow you to claim them. Use emergencyUnstake fubction if you are willing to lose only the last rewards");
-        _unstake();
-    }
-
-    function emergencyUnstake() external{
-        _unstake();
-    }
-
-    function stake() internal{
-        
-        
+    function stake() internal{  
         uint256 _currentRewardId=currentRewardId;
         RewardsInfo memory currentRewardInfo=rewardIdToRewardsInfo[_currentRewardId];
         uint256 currentRewardLimitStakeDate=currentRewardInfo.stakeLimitDate;
 
-        //We shouldn't allow new deposits until current rewards are paid if they mush have already paid
-        require(block.timestamp<currentRewardLimitStakeDate+1 weeks,"Wait until current rewards are already paid before staking");
+        
 
         uint256 firstRewardId=_currentRewardId;
         address payable sender= payable(_msgSender());
         Deposit memory deposit = addressToDeposits[sender];
         
         bool invalidCurrentRewardsStake=block.timestamp>currentRewardLimitStakeDate;
-
+        
         
         if(invalidCurrentRewardsStake){
             firstRewardId+=1;
@@ -178,11 +158,10 @@ contract RewardETHPool is Ownable{
         //There weren't other deposits        
         if(deposit.amount==0){
             addressToDeposits[sender].firstRewardId=firstRewardId;
-        //The las deposit was done with the same firstRewardId value
+            addressToDeposits[sender].amount=newDeposit;
         }else{
-            //There were a previous deposit and it hasn't been unstaked yet.
-            //It must be first unstaken in order to claim all the pending rewards
             require(deposit.firstRewardId==firstRewardId,"It is needed to unstake first in order to claim all the pending rewards");
+            addressToDeposits[sender].amount+=newDeposit;
         }
 
         if(!invalidCurrentRewardsStake){
@@ -190,7 +169,6 @@ contract RewardETHPool is Ownable{
         }
         totalDeposits+=newDeposit; 
 
-        addressToDeposits[sender].amount=newDeposit;
     }
 
     //Deposit default behavior
@@ -198,9 +176,60 @@ contract RewardETHPool is Ownable{
         stake();
     }
 
+
+    function _unstake() internal nonReentrant{
+        Deposit memory deposit=addressToDeposits[_msgSender()];
+        uint256 _currentRewardTotalDeposits=currentRewardTotalDeposits;
+
+        //If the current rewards hasn't been deposited the transaction will be reverted,
+        //user will need yo use the panicUnstake function
+        uint256 pendingRewards=calculateDepositPendingRewards(deposit);
+        
+        payable(_msgSender()).transfer(deposit.amount+pendingRewards);
+        
+        _currentRewardTotalDeposits-=deposit.amount;
+        currentRewardTotalDeposits=_currentRewardTotalDeposits;
+        
+        
+        //rewardIdToRewardsInfo[currentRewardId].totalDeposits=_currentRewardTotalDeposits;
+        
+         
+
+        addressToDeposits[_msgSender()].amount=0;
+        totalDeposits-=deposit.amount;
+        deposit.amount=0;
+    }
+
+    function unstake() external{
+        uint256 currentRewardStakeEndDate=rewardIdToRewardsInfo[currentRewardId].stakeLimitDate+ 7 days;
+        require(currentRewardStakeEndDate>block.timestamp,"Current pending rewards hasn't been paid yet, unstake won't allow you to claim them. Use emergencyUnstake function if you are willing to lose only the last rewards");
+        _unstake();
+    }
+
+    function emergencyUnstake() external{
+        _unstake();
+    }
+
     
+    function getCurrentStakeLimitDate() public view returns(uint256){
+        return rewardIdToRewardsInfo[currentRewardId].stakeLimitDate;
+    }
 
+    function getCurrentRewardDate() public view returns(uint256){
+        return rewardIdToRewardsInfo[currentRewardId].stakeLimitDate + 7 days;
+    }
 
+    function getCurrentPromisedRewards()public view returns(uint256){
+        return rewardIdToRewardsInfo[currentRewardId].amount;
+    }
+
+    function getPendingRewardsToPay(address account)public view returns(uint256){
+        Deposit memory deposit=addressToDeposits[account];
+        if(deposit.amount==0){
+            return 0;
+        }
+        return calculateDepositPendingRewards(deposit);
+    }
 
 
 
